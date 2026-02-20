@@ -1,0 +1,28 @@
+[project]
+name = "osm-rasterizer"
+version = "0.1.0"
+description = "Rasterize OpenStreetMap vector features into GeoTIFF rasters"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "osmnx>=2.0",
+    "rasterio>=1.4",
+    "geopandas>=1.0",
+    "numpy>=2.0",
+    "pyproj>=3.4",
+    "shapely>=2.0",
+    "typer>=0.15",
+    "rich>=13.0",
+    "pytest>=9.0.2",
+]
+
+[project.scripts]
+osm-rasterizer = "osm_rasterizer.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["integration: requires live Overpass network access"]
