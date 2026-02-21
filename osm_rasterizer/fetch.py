@@ -31,9 +31,10 @@ def fetch_features(
         GeoDataFrame (with a geometry column) if no features are found.
     """
     minx, miny, maxx, maxy = bbox
-    # osmnx expects (north, south, east, west) — opposite of our convention
+    # osmnx 2.x uses (west, south, east, north) = (minx, miny, maxx, maxy),
+    # which matches our convention directly. osmnx 1.x used (north, south, east, west).
     try:
-        gdf = ox.features_from_bbox(bbox=(maxy, miny, maxx, minx), tags=tags)
+        gdf = ox.features_from_bbox(bbox=(minx, miny, maxx, maxy), tags=tags)
     except InsufficientResponseError:
         return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
 

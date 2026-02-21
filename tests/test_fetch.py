@@ -28,16 +28,16 @@ def test_returns_geodataframe(london_bbox):
     assert isinstance(result, gpd.GeoDataFrame)
 
 
-def test_bbox_inversion():
-    """features_from_bbox must be called with (north, south, east, west)."""
+def test_bbox_order():
+    """features_from_bbox must be called with osmnx 2.x (west, south, east, north) order."""
     minx, miny, maxx, maxy = LONDON_BBOX
     with patch("osm_rasterizer.fetch.ox.features_from_bbox", return_value=_make_gdf()) as mock_fn:
         fetch_features(LONDON_BBOX, {"building": True})
         _, kwargs = mock_fn.call_args
         called_bbox = kwargs["bbox"]
-        # osmnx convention: (north, south, east, west)
-        assert called_bbox == (maxy, miny, maxx, minx), (
-            f"Expected bbox=(north={maxy}, south={miny}, east={maxx}, west={minx}), "
+        # osmnx 2.x convention: (west, south, east, north) = (minx, miny, maxx, maxy)
+        assert called_bbox == (minx, miny, maxx, maxy), (
+            f"Expected bbox=(west={minx}, south={miny}, east={maxx}, north={maxy}), "
             f"got {called_bbox}"
         )
 

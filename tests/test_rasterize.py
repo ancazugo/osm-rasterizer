@@ -14,6 +14,7 @@ from shapely.geometry import Polygon
 from osm_rasterizer.rasterize import (
     RasterizeResult,
     _auto_name,
+    _fill_nodata_consensus,
     _normalize_features,
     rasterize,
 )
@@ -114,7 +115,7 @@ class TestRasterize:
                 single_layer=True,
             )
         assert result.array.shape[0] == 1
-        assert result.band_names == ["merged"]
+        assert result.band_names == ["landcover"]
 
     def test_band_names_auto(self):
         with patch("osm_rasterizer.rasterize.fetch_features", return_value=_make_gdf()):
@@ -195,6 +196,109 @@ class TestRasterize:
                 crs="EPSG:32630",
             )
         assert result.crs.to_epsg() == 32630
+
+
+# ── _fill_nodata_consensus ───────────────────────────────────────────────────
+
+class TestFillNodataConsensus:
+    def test_surrounded_zero_gets_filled(self):
+        arr = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8)
+        result = _fill_nodata_consensus(arr)
+        assert result[1, 1] == 1
+
+    def test_no_zeros_unchanged(self):
+        arr = np.array([[1, 2], [3, 1]], dtype=np.uint8)
+        result = _fill_nodata_consensus(arr)
+        np.testing.assert_array_equal(result, arr)
+
+    def test_all_zeros_stays_zero(self):
+        arr = np.zeros((3, 3), dtype=np.uint8)
+        result = _fill_nodata_consensus(arr)
+        assert result.sum() == 0
+
+    def test_nearest_label_propagated(self):
+        # Top-left 2×2 block is zero; nearest non-zero is value 1 at (0,2)
+        arr = np.array([[0, 0, 1], [0, 0, 2], [3, 3, 3]], dtype=np.uint8)
+        result = _fill_nodata_consensus(arr)
+        # Every pixel must be non-zero
+        assert (result > 0).all()
+        # The top-left corner is closest to (0,2)=1 or (1,2)=2 — either way
+        # the result must be one of the existing labels, not 0.
+        assert result[0, 0] in (1, 2, 3)
+
+    def test_large_empty_region_fully_filled(self):
+        # 5×5 array: only the edges have labels, centre 3×3 is empty
+        arr = np.ones((5, 5), dtype=np.uint8)
+        arr[1:4, 1:4] = 0
+        result = _fill_nodata_consensus(arr)
+        assert (result > 0).all()
+
+    def test_max_distance_limits_fill(self):
+        # 1-D-like row: labelled pixel at col 0, zero pixels at cols 1-4
+        arr = np.array([[1, 0, 0, 0, 0]], dtype=np.uint8)
+        result = _fill_nodata_consensus(arr, max_distance=2)
+        # cols 1 and 2 are within distance 2 → filled
+        assert result[0, 1] == 1
+        assert result[0, 2] == 1
+        # cols 3 and 4 are beyond distance 2 → stay 0
+        assert result[0, 3] == 0
+        assert result[0, 4] == 0
+
+    def test_max_distance_none_fills_all(self):
+        arr = np.array([[1, 0, 0, 0, 0]], dtype=np.uint8)
+        result = _fill_nodata_consensus(arr, max_distance=None)
+        assert (result > 0).all()
+
+    def test_returns_uint8(self):
+        arr = np.array([[1, 1], [1, 0]], dtype=np.uint8)
+        result = _fill_nodata_consensus(arr)
+        assert result.dtype == np.uint8
+
+    def test_original_not_mutated(self):
+        arr = np.array([[1, 1, 1], [1, 0, 1], [1, 1, 1]], dtype=np.uint8)
+        original = arr.copy()
+        _fill_nodata_consensus(arr)
+        np.testing.assert_array_equal(arr, original)
+
+
+# ── rasterize() fill_nodata ──────────────────────────────────────────────────
+
+class TestRasterizeFillNodata:
+    def test_fill_nodata_false_preserves_zeros(self):
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=_empty_gdf()):
+            with warnings.catch_warnings(record=True):
+                warnings.simplefilter("always")
+                result = rasterize(
+                    bbox=LONDON_BBOX,
+                    features=[{"building": True}],
+                    resolution=50.0,
+                    fill_nodata=False,
+                )
+        assert result.array.sum() == 0
+
+    def test_fill_nodata_true_does_not_increase_zeros(self):
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=_make_gdf()):
+            result_no_fill = rasterize(
+                bbox=LONDON_BBOX, features=[{"building": True}], resolution=50.0, fill_nodata=False
+            )
+            result_fill = rasterize(
+                bbox=LONDON_BBOX, features=[{"building": True}], resolution=50.0, fill_nodata=True
+            )
+        zeros_before = (result_no_fill.array == 0).sum()
+        zeros_after = (result_fill.array == 0).sum()
+        assert zeros_after <= zeros_before
+
+    def test_fill_nodata_true_single_layer(self):
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=_make_gdf()):
+            result = rasterize(
+                bbox=LONDON_BBOX,
+                features=[{"building": True}, {"highway": True}],
+                resolution=50.0,
+                single_layer=True,
+                fill_nodata=True,
+            )
+        assert isinstance(result, RasterizeResult)
+        assert result.array.shape[0] == 1
 
 
 @pytest.mark.integration

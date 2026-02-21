@@ -48,6 +48,8 @@ def main(
     output: Annotated[str, typer.Option("--output", "-o", help="Output GeoTIFF file path.")],
     resolution: Annotated[float, typer.Option("--resolution", "-r", help="Pixel resolution in metres.")] = 10.0,
     single_layer: Annotated[bool, typer.Option("--single-layer", help="Merge all features into a single band.")] = False,
+    fill_nodata: Annotated[bool, typer.Option("--fill-nodata", help="Fill empty pixels with the consensus of neighbouring pixels.")] = False,
+    fill_nodata_distance: Annotated[Optional[float], typer.Option("--fill-nodata-distance", help="Max distance in pixels to fill from a labelled pixel. Prevents border flooding. Default: unlimited.")] = None,
     crs: Annotated[Optional[str], typer.Option("--crs", help="Output CRS, e.g. 'EPSG:32632'. Auto-detected if omitted.")] = None,
 ) -> None:
     """Rasterize OSM features for a bounding box into a GeoTIFF."""
@@ -67,13 +69,15 @@ def main(
     parsed = [_parse_feature(f) for f in feature]
 
     console.print(f"[bold]Rasterizing {len(parsed)} feature(s)[/bold] → [cyan]{output}[/cyan]")
-    console.print(f"  bbox: {bbox_tuple}, resolution: {resolution}m, single_layer: {single_layer}")
+    console.print(f"  bbox: {bbox_tuple}, resolution: {resolution}m, single_layer: {single_layer}, fill_nodata: {fill_nodata}, fill_nodata_distance: {fill_nodata_distance}")
 
     rasterize(
         bbox=bbox_tuple,
         features=parsed,
         resolution=resolution,
         single_layer=single_layer,
+        fill_nodata=fill_nodata,
+        fill_nodata_distance=fill_nodata_distance,
         output_path=output,
         crs=crs,
     )

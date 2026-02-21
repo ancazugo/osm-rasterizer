@@ -21,13 +21,60 @@ FeatureSpec = Union[OsmTags, tuple[str, OsmTags]]
 
 @dataclasses.dataclass
 class RasterizeResult:
-    """Result of a rasterization operation."""
+    """Result of a rasterization operation.
+
+    When ``single_layer=False`` (default): ``array`` shape is ``(n_bands, H, W)``,
+    values are 0/1 per-feature presence masks.
+
+    When ``single_layer=True``: ``array`` shape is ``(1, H, W)``, values are
+    1-based category indices into ``categories`` (0 = no data).  The priority
+    order is determined by the feature list order passed to ``rasterize()``:
+    the **last** feature has the highest priority and wins conflicts.
+    """
 
     array: np.ndarray      # shape: (n_bands, height, width), dtype uint8
     transform: Affine
     crs: rasterio.CRS
     band_names: list[str]
     nodata: int = 0
+    categories: list[str] | None = None  # populated in single_layer mode
+
+
+def _fill_nodata_consensus(
+    arr: np.ndarray,
+    max_distance: float | None = None,
+) -> np.ndarray:
+    """Fill zero pixels with the value of their nearest non-zero neighbour.
+
+    Uses a Euclidean distance transform to propagate labels outward from all
+    labelled pixels simultaneously in a single O(n) pass.
+
+    Parameters
+    ----------
+    arr:
+        2-D ``uint8`` array.
+    max_distance:
+        Maximum distance in pixels within which a zero pixel will be filled.
+        Zero pixels farther than this from any labelled pixel are left as 0,
+        preventing border areas outside OSM coverage from being flooded.
+        ``None`` (default) fills all zero pixels regardless of distance.
+    """
+    from scipy.ndimage import distance_transform_edt
+
+    zero_mask = arr == 0
+    if not zero_mask.any() or arr.max() == 0:
+        return arr.copy()
+
+    distances, nearest = distance_transform_edt(zero_mask, return_indices=True)
+
+    if max_distance is not None:
+        fill_mask = zero_mask & (distances <= max_distance)
+    else:
+        fill_mask = zero_mask
+
+    result = arr.copy()
+    result[fill_mask] = arr[nearest[0][fill_mask], nearest[1][fill_mask]]
+    return result
 
 
 def _auto_name(tags: dict, index: int) -> str:
@@ -73,6 +120,8 @@ def rasterize(
     features: list,
     resolution: float = 10.0,
     single_layer: bool = False,
+    fill_nodata: bool = False,
+    fill_nodata_distance: Union[float, None] = None,
     output_path: Union[str, Path, None] = None,
     transform: Union[Affine, None] = None,
     crs: Union[rasterio.CRS, str, None] = None,
@@ -88,7 +137,20 @@ def rasterize(
     resolution:
         Pixel size in metres (ignored when *transform* is supplied).
     single_layer:
-        If True, merge all feature bands into one.
+        If True, merge all features into a single categorical band.  Pixel
+        values are 1-based indices into the feature list (0 = no data).
+        Conflicts are resolved by priority: features listed **later** win.
+        Reorder your feature list from least to most important category.
+    fill_nodata:
+        If True, replace empty (zero) pixels with the value of their nearest
+        non-zero neighbour.  Applied per-band in multi-band mode and on the
+        merged array in single-layer mode.
+    fill_nodata_distance:
+        Maximum distance in pixels within which an empty pixel will be
+        filled.  Pixels farther than this from any labelled pixel are left
+        as 0, preventing border areas outside OSM coverage from being
+        flooded with a nearby label.  Ignored when *fill_nodata* is False.
+        ``None`` (default) fills all empty pixels regardless of distance.
     output_path:
         Write a GeoTIFF here; return None instead of RasterizeResult.
     transform:
@@ -180,19 +242,30 @@ def rasterize(
         band_names.append(name)
 
     # 7. Handle single_layer
-    stacked = np.stack(bands, axis=0)
     if single_layer:
-        array = np.any(stacked, axis=0, keepdims=True).astype(np.uint8)
-        final_band_names = ["merged"]
+        # Priority-based merge: later features overwrite earlier ones.
+        # Pixel value = 1-based category index; 0 = no data.
+        merged = np.zeros((height, width), dtype=np.uint8)
+        for i, band in enumerate(bands):
+            merged = np.where(band > 0, np.uint8(i + 1), merged)
+        if fill_nodata:
+            merged = _fill_nodata_consensus(merged, max_distance=fill_nodata_distance)
+        array = merged[np.newaxis, ...]
+        final_band_names = ["landcover"]
+        categories = band_names
     else:
-        array = stacked
+        if fill_nodata:
+            bands = [_fill_nodata_consensus(b, max_distance=fill_nodata_distance) for b in bands]
+        array = np.stack(bands, axis=0)
         final_band_names = band_names
+        categories = None
 
     result = RasterizeResult(
         array=array,
         transform=out_transform,
         crs=out_crs,
         band_names=final_band_names,
+        categories=categories,
     )
 
     # 8. Write or return
@@ -219,6 +292,10 @@ def rasterize(
     ) as dst:
         dst.write(array)
         dst.update_tags(BAND_NAMES=",".join(final_band_names))
+        if categories is not None:
+            # single_layer mode: record the category→value mapping.
+            # Value 1 = categories[0], value 2 = categories[1], etc.
+            dst.update_tags(CATEGORIES=",".join(categories))
         for i, band_name in enumerate(final_band_names, start=1):
             dst.update_tags(i, name=band_name)
 
