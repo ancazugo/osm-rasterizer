@@ -4,6 +4,19 @@ version = "0.1.0"
 description = "Rasterize OpenStreetMap vector features into GeoTIFF rasters"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "MIT"
+authors = [
+    { name = "Andrés Camilo Zúñiga-González", email = "ancazugo@hotmail.com" },
+]
+keywords = ["osm", "openstreetmap", "rasterization", "geospatial", "gis"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: GIS",
+]
 dependencies = [
     "osmnx>=2.0",
     "rasterio>=1.4",
@@ -13,12 +26,18 @@ dependencies = [
     "shapely>=2.0",
     "typer>=0.15",
     "rich>=13.0",
-    "pytest>=9.0.2",
     "scipy>=1.17.0",
 ]
 
+[project.urls]
+Homepage = "https://github.com/ancazugo/osm-rasterizer"
+Repository = "https://github.com/ancazugo/osm-rasterizer"
+
 [project.scripts]
 osm-rasterizer = "osm_rasterizer.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=9.0.2"]
 
 [build-system]
 requires = ["hatchling"]

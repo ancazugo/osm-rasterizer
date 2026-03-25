@@ -12,3 +12,5 @@ wheels/
 CLAUDE.md
 
 cache/
+*.tif*
+*.png
