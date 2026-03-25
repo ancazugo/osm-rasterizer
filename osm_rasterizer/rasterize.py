@@ -125,6 +125,7 @@ def rasterize(
     output_path: Union[str, Path, None] = None,
     transform: Union[Affine, None] = None,
     crs: Union[rasterio.CRS, str, None] = None,
+    date: Union[str, None] = None,
 ) -> Union[RasterizeResult, None]:
     """Rasterize OSM features into a GeoTIFF or return a RasterizeResult.
 
@@ -157,6 +158,9 @@ def rasterize(
         Explicit affine transform (overrides *resolution*).
     crs:
         Output CRS; auto-detected from *bbox* if None.
+    date:
+        Optional ISO 8601 date string (e.g. ``"2020-01-01"``) to query OSM
+        data as it existed at that point in time.
 
     Returns
     -------
@@ -212,7 +216,7 @@ def rasterize(
     band_names: list[str] = []
 
     for name, tags in named_features:
-        gdf = fetch_features(bbox, tags)
+        gdf = fetch_features(bbox, tags, date=date)
 
         if gdf.empty:
             warnings.warn(
