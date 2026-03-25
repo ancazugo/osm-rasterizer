@@ -84,6 +84,76 @@ def test_empty_gdf_passthrough(london_bbox):
     assert result.empty
 
 
+def test_date_sets_overpass_filter():
+    """A date argument injects [date:"..."] into the Overpass API settings."""
+    import osmnx as ox
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", return_value=_make_gdf()):
+        fetch_features(LONDON_BBOX, {"building": True}, date="2020-01-01")
+
+    # Settings should be restored after the call
+    assert '[date:"' not in ox.settings.overpass_settings
+
+
+def test_date_with_time_component():
+    """A date string with a time component is passed through unchanged."""
+    captured = {}
+
+    def _capture_settings(*args, **kwargs):
+        captured["settings"] = ox.settings.overpass_settings
+        return _make_gdf()
+
+    import osmnx as ox
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=_capture_settings):
+        fetch_features(LONDON_BBOX, {"building": True}, date="2020-06-15T12:00:00Z")
+
+    assert '[date:"2020-06-15T12:00:00Z"]' in captured["settings"]
+
+
+def test_date_normalizes_bare_date():
+    """A bare date (no time component) gets T00:00:00Z appended."""
+    captured = {}
+
+    def _capture_settings(*args, **kwargs):
+        captured["settings"] = ox.settings.overpass_settings
+        return _make_gdf()
+
+    import osmnx as ox
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=_capture_settings):
+        fetch_features(LONDON_BBOX, {"building": True}, date="2020-01-01")
+
+    assert '[date:"2020-01-01T00:00:00Z"]' in captured["settings"]
+
+
+def test_date_none_leaves_default_settings():
+    """When date=None, overpass_settings are not modified."""
+    import osmnx as ox
+
+    original = ox.settings.overpass_settings
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", return_value=_make_gdf()):
+        fetch_features(LONDON_BBOX, {"building": True}, date=None)
+
+    assert ox.settings.overpass_settings == original
+
+
+def test_date_settings_restored_on_error():
+    """overpass_settings are restored even if osmnx raises an exception."""
+    import osmnx as ox
+
+    original = ox.settings.overpass_settings
+    try:
+        from osmnx._errors import InsufficientResponseError
+    except ImportError:
+        from osmnx.errors import InsufficientResponseError
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=InsufficientResponseError()):
+        fetch_features(LONDON_BBOX, {"building": True}, date="2020-01-01")
+
+    assert ox.settings.overpass_settings == original
+
+
 @pytest.mark.integration
 def test_integration_buildings():
     """Integration: fetch real buildings from Overpass for a small bbox."""
