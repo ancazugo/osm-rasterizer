@@ -1,6 +1,6 @@
 [project]
 name = "osm-rasterizer"
-version = "0.1.0"
+version = "0.1.1"
 description = "Rasterize OpenStreetMap vector features into GeoTIFF rasters"
 readme = "README.md"
 requires-python = ">=3.12"
