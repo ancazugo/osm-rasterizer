@@ -1,5 +1,8 @@
 # osm-rasterizer
 
+![osm-rasterizer logo](assets/logos/osm-rasterizer-mark.svg#only-light){ width="160" }
+![osm-rasterizer logo](assets/logos/osm-rasterizer-mark-dark.svg#only-dark){ width="160" }
+
 [![PyPI version](https://img.shields.io/pypi/v/osm-rasterizer.svg)](https://pypi.org/project/osm-rasterizer/)
 [![Python 3.12+](https://img.shields.io/pypi/pyversions/osm-rasterizer.svg)](https://pypi.org/project/osm-rasterizer/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)

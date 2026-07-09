@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ancazugo/osm-rasterizer/master/docs/assets/logos/osm-rasterizer-mark-dark.svg">
+    <img src="https://raw.githubusercontent.com/ancazugo/osm-rasterizer/master/docs/assets/logos/osm-rasterizer-mark.svg" alt="osm-rasterizer logo" width="160">
+  </picture>
+</p>
+
 # osm-rasterizer
 
 [![PyPI version](https://img.shields.io/pypi/v/osm-rasterizer.svg)](https://pypi.org/project/osm-rasterizer/)

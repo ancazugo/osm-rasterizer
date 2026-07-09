@@ -6,6 +6,8 @@ repo_name: ancazugo/osm-rasterizer
 
 theme:
   name: material
+  logo: assets/logos/osm-rasterizer-mono-white.svg
+  favicon: assets/logos/osm-rasterizer-mark.svg
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -28,6 +30,7 @@ theme:
 
 markdown_extensions:
   - admonition
+  - attr_list
   - pymdownx.highlight
   - pymdownx.superfences
   - toc:
