@@ -14,3 +14,7 @@ CLAUDE.md
 cache/
 *.tif*
 *.png
+
+# MkDocs
+site/
+.cache/

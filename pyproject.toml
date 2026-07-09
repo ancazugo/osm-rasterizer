@@ -38,6 +38,11 @@ osm-rasterizer = "osm_rasterizer.cli:app"
 
 [dependency-groups]
 dev = ["pytest>=9.0.2"]
+docs = [
+    "mkdocs>=1.6",
+    "mkdocs-material>=9.5",
+    "mkdocstrings[python]>=0.27",
+]
 
 [build-system]
 requires = ["hatchling"]
