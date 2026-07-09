@@ -12,12 +12,20 @@ app = typer.Typer(help="Rasterize OpenStreetMap features into GeoTIFF rasters.")
 console = Console()
 
 
-def _parse_feature(s: str) -> tuple[str, dict] | dict:
-    """Parse a feature string into a (name, tags) tuple or bare tags dict.
+_ENVELOPE_OPTION_KEYS = ("line_width", "width_from_tags")
+
+
+def _parse_feature(s: str) -> tuple[str, dict, dict] | tuple[str, dict] | dict:
+    """Parse a feature string into a tags dict or (name, tags[, options]) tuple.
 
     Accepted formats:
-    - ``'{"building": true}'``          → bare dict
+    - ``'{"building": true}'``          → bare tags dict
     - ``'name:{"building": true}'``     → named tuple
+    - ``'name:{"tags": {"highway": true}, "line_width": 8}'`` → envelope with
+      per-feature options (``line_width``, ``width_from_tags``)
+
+    A JSON object containing a ``"tags"`` key whose value is an object is
+    treated as an envelope; anything else is a plain OSM tag dict.
     """
     brace_idx = s.find("{")
     if brace_idx < 0:
@@ -27,24 +35,39 @@ def _parse_feature(s: str) -> tuple[str, dict] | dict:
     json_part = s[brace_idx:]
 
     try:
-        tags = json.loads(json_part)
+        obj = json.loads(json_part)
     except json.JSONDecodeError as exc:
         raise typer.BadParameter(f"Invalid JSON in feature spec {s!r}: {exc}") from exc
 
-    if not isinstance(tags, dict):
-        raise typer.BadParameter(f"Feature JSON must be an object, got: {type(tags).__name__}")
+    if not isinstance(obj, dict):
+        raise typer.BadParameter(f"Feature JSON must be an object, got: {type(obj).__name__}")
 
     name = prefix.rstrip(":").strip() if prefix.strip().rstrip(":") else None
 
+    if isinstance(obj.get("tags"), dict):
+        tags = obj["tags"]
+        options = {k: v for k, v in obj.items() if k != "tags"}
+        unknown = set(options) - set(_ENVELOPE_OPTION_KEYS)
+        if unknown:
+            raise typer.BadParameter(
+                f"Unknown option(s) {sorted(unknown)} in feature spec {s!r}; "
+                f"valid options are {list(_ENVELOPE_OPTION_KEYS)}"
+            )
+        if not name:
+            raise typer.BadParameter(
+                f"Feature specs with options must be named, e.g. 'road:{json_part}'"
+            )
+        return (name, tags, options)
+
     if name:
-        return (name, tags)
-    return tags
+        return (name, obj)
+    return obj
 
 
 @app.command()
 def main(
     bbox: Annotated[str, typer.Option("--bbox", "-b", help="Bounding box as 'minx,miny,maxx,maxy' in WGS84.")],
-    feature: Annotated[list[str], typer.Option("--feature", "-f", help="OSM feature spec. Format: '{\"key\": val}' or 'name:{\"key\": val}'. Repeatable.")],
+    feature: Annotated[list[str], typer.Option("--feature", "-f", help="OSM feature spec. Format: '{\"key\": val}', 'name:{\"key\": val}', or envelope with line-width options: 'name:{\"tags\": {\"key\": val}, \"line_width\": 8, \"width_from_tags\": true}'. Repeatable.")],
     output: Annotated[str, typer.Option("--output", "-o", help="Output GeoTIFF file path.")],
     resolution: Annotated[float, typer.Option("--resolution", "-r", help="Pixel resolution in metres.")] = 10.0,
     single_layer: Annotated[bool, typer.Option("--single-layer", help="Merge all features into a single band.")] = False,

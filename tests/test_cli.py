@@ -40,6 +40,25 @@ class TestParseFeature:
         with pytest.raises(typer.BadParameter):
             _parse_feature("{bad json}")
 
+    def test_envelope_with_options(self):
+        result = _parse_feature('road:{"tags": {"highway": true}, "line_width": 8, "width_from_tags": true}')
+        assert result == ("road", {"highway": True}, {"line_width": 8, "width_from_tags": True})
+
+    def test_envelope_unknown_option_raises(self):
+        import typer
+        with pytest.raises(typer.BadParameter, match="Unknown option"):
+            _parse_feature('road:{"tags": {"highway": true}, "buffer": 8}')
+
+    def test_envelope_without_name_raises(self):
+        import typer
+        with pytest.raises(typer.BadParameter, match="must be named"):
+            _parse_feature('{"tags": {"highway": true}, "line_width": 8}')
+
+    def test_non_dict_tags_key_is_plain_tag_dict(self):
+        # A "tags" key with a non-object value is an ordinary OSM tag filter
+        result = _parse_feature('{"tags": "yes"}')
+        assert result == {"tags": "yes"}
+
 
 # ── CLI integration ──────────────────────────────────────────────────────────
 
@@ -108,6 +127,23 @@ class TestCli:
         assert result.exit_code == 0, result.output
         call_kwargs = mock_rast.call_args[1]
         assert call_kwargs["features"][0] == ("bldgs", {"building": True})
+
+    def test_envelope_feature_passed_through(self, tmp_path):
+        out = str(tmp_path / "out.tif")
+        with self._patch_rasterize() as mock_rast:
+            result = runner.invoke(
+                app,
+                [
+                    "--bbox", "-0.13,51.49,-0.11,51.51",
+                    "--feature", 'road:{"tags": {"highway": true}, "line_width": 8, "width_from_tags": true}',
+                    "--output", out,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        call_kwargs = mock_rast.call_args[1]
+        assert call_kwargs["features"][0] == (
+            "road", {"highway": True}, {"line_width": 8, "width_from_tags": True}
+        )
 
     def test_bad_bbox_exits_nonzero(self, tmp_path):
         out = str(tmp_path / "out.tif")

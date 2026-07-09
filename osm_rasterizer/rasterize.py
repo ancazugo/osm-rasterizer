@@ -6,6 +6,7 @@ from math import ceil
 from pathlib import Path
 from typing import Union
 
+import geopandas as gpd
 import numpy as np
 import rasterio
 from affine import Affine
@@ -16,7 +17,14 @@ from .crs import get_utm_crs
 from .fetch import fetch_features
 
 OsmTags = dict[str, Union[str, bool, list[str]]]
-FeatureSpec = Union[OsmTags, tuple[str, OsmTags]]
+FeatureOptions = dict[str, Union[float, bool]]
+FeatureSpec = Union[OsmTags, tuple[str, OsmTags], tuple[str, OsmTags, FeatureOptions]]
+
+# Assumed width of a single traffic lane, used when deriving a line width
+# from a `lanes` tag.
+LANE_WIDTH_M = 3.5
+
+VALID_FEATURE_OPTIONS = ("line_width", "width_from_tags")
 
 
 @dataclasses.dataclass
@@ -90,10 +98,23 @@ def _auto_name(tags: dict, index: int) -> str:
     return key
 
 
+def _validate_options(options: dict, context: str) -> dict:
+    """Validate a feature options dict, returning it unchanged."""
+    if not isinstance(options, dict):
+        raise TypeError(f"feature options for {context} must be a dict, got {type(options).__name__}")
+    unknown = set(options) - set(VALID_FEATURE_OPTIONS)
+    if unknown:
+        raise ValueError(
+            f"unknown feature option(s) {sorted(unknown)} for {context}; "
+            f"valid options are {list(VALID_FEATURE_OPTIONS)}"
+        )
+    return options
+
+
 def _normalize_features(
     features: list,
-) -> list[tuple[str, dict]]:
-    """Normalize feature specs to ``[(name, tags), ...]``."""
+) -> list[tuple[str, dict, dict]]:
+    """Normalize feature specs to ``[(name, tags, options), ...]``."""
     if not features:
         raise ValueError("features list must not be empty")
 
@@ -105,14 +126,91 @@ def _normalize_features(
             "not a mix of both"
         )
 
-    normalized: list[tuple[str, dict]] = []
+    normalized: list[tuple[str, dict, dict]] = []
     for i, f in enumerate(features):
         if isinstance(f, tuple):
-            name, tags = f
-            normalized.append((str(name), tags))
+            if len(f) == 2:
+                name, tags = f
+                options: dict = {}
+            elif len(f) == 3:
+                name, tags, options = f
+            else:
+                raise TypeError(
+                    f"feature tuples must be (name, tags) or (name, tags, options), "
+                    f"got tuple of length {len(f)}"
+                )
+            normalized.append((str(name), tags, _validate_options(options, f"feature '{name}'")))
         else:
-            normalized.append((_auto_name(f, i), f))
+            normalized.append((_auto_name(f, i), f, {}))
     return normalized
+
+
+def _parse_width_tag(value) -> Union[float, None]:
+    """Leniently parse an OSM ``width`` tag value in metres.
+
+    Handles plain numbers (``"12"``, ``"12.5"``, ``12.5``) and an optional
+    metre suffix (``"12 m"``, ``"12m"``).  Returns None for anything else
+    (missing values, imperial notation, ranges, junk).
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        width = float(value)
+        return width if width == width and width > 0 else None  # NaN/non-positive → None
+    if not isinstance(value, str):
+        return None
+    text = value.strip().lower()
+    if text.endswith("m") and not text.endswith("nm") and not text.endswith("km"):
+        text = text[:-1].strip()
+    try:
+        width = float(text)
+    except ValueError:
+        return None
+    return width if width > 0 else None
+
+
+def _row_line_width(width_tag, lanes_tag, options: dict) -> Union[float, None]:
+    """Resolve the burn width in metres for one geometry.
+
+    Order: ``width`` tag → ``lanes`` tag × LANE_WIDTH_M → ``line_width``
+    option → None (unbuffered).  Tags are consulted only when the
+    ``width_from_tags`` option is set.
+    """
+    if options.get("width_from_tags"):
+        width = _parse_width_tag(width_tag)
+        if width is not None:
+            return width
+        lanes = _parse_width_tag(lanes_tag)
+        if lanes is not None:
+            return lanes * LANE_WIDTH_M
+    line_width = options.get("line_width")
+    if line_width is not None:
+        return float(line_width)
+    return None
+
+
+def _apply_line_widths(gdf_utm, options: dict):
+    """Buffer line geometries to their resolved width (in CRS units, metres).
+
+    Returns a GeoSeries of geometries with LineString/MultiLineString rows
+    buffered by ``width / 2``; other geometry types and lines with no
+    resolvable width pass through unchanged.  No-op (returns the original
+    geometry column) when the options request no widths.
+    """
+    if not options.get("line_width") and not options.get("width_from_tags"):
+        return gdf_utm.geometry
+
+    width_col = gdf_utm["width"] if "width" in gdf_utm.columns else [None] * len(gdf_utm)
+    lanes_col = gdf_utm["lanes"] if "lanes" in gdf_utm.columns else [None] * len(gdf_utm)
+
+    buffered = []
+    for geom, width_tag, lanes_tag in zip(gdf_utm.geometry, width_col, lanes_col):
+        if geom is not None and geom.geom_type in ("LineString", "MultiLineString"):
+            width = _row_line_width(width_tag, lanes_tag, options)
+            if width is not None:
+                geom = geom.buffer(width / 2.0)
+        buffered.append(geom)
+    return gpd.GeoSeries(buffered, crs=gdf_utm.crs)
 
 
 def rasterize(
@@ -135,7 +233,20 @@ def rasterize(
     bbox:
         ``(minx, miny, maxx, maxy)`` in WGS84 degrees.
     features:
-        List of OSM tag dicts or ``(name, tags)`` tuples.
+        List of OSM tag dicts, ``(name, tags)`` tuples, or
+        ``(name, tags, options)`` tuples.  The options dict controls how
+        linestring geometries (roads, waterways, …) are burned:
+
+        - ``line_width`` (float): real-world width in metres; lines are
+          buffered by ``line_width / 2`` in the projected CRS before
+          rasterization.
+        - ``width_from_tags`` (bool): derive a per-geometry width from the
+          feature's own OSM tags — ``width`` in metres, else ``lanes`` ×
+          3.5 m — falling back to ``line_width`` (if given) when neither
+          tag is present or parseable.
+
+        Without options, lines burn as 1-pixel-wide traces.  Polygons and
+        points are never buffered.
     resolution:
         Pixel size in metres (ignored when *transform* is supplied).
     single_layer:
@@ -223,7 +334,7 @@ def rasterize(
     bands: list[np.ndarray] = []
     band_names: list[str] = []
 
-    for name, tags in named_features:
+    for name, tags, options in named_features:
         gdf = fetch_features(bbox, tags, date=date, provider=provider)
 
         if gdf.empty:
@@ -237,10 +348,11 @@ def rasterize(
             continue
 
         gdf_utm = gdf.to_crs(out_crs.to_wkt())
+        geometries = _apply_line_widths(gdf_utm, options)
 
         shapes = (
             (geom, 1)
-            for geom in gdf_utm.geometry
+            for geom in geometries
             if geom is not None and not geom.is_empty
         )
         burned = rio_rasterize(

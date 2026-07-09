@@ -56,6 +56,21 @@ Tag values follow the [osmnx convention](https://osmnx.readthedocs.io/):
 '{"highway": ["primary", "secondary"]}'   # any of these values
 ```
 
+A named spec may also be an *envelope* — a JSON object with a `"tags"` key plus per-feature options:
+
+```
+'road:{"tags": {"highway": true}, "line_width": 8, "width_from_tags": true}'
+```
+
+### Line widths
+
+Linestring features (roads, waterways, paths) have no area, so by default they burn as traces exactly **one pixel wide** — a motorway at 2 m resolution becomes a 2 m ribbon. Two per-feature options control this:
+
+- `line_width` (metres) — buffer each line to this real-world width (applied as `width / 2` on each side, in the projected CRS).
+- `width_from_tags` (bool) — derive the width per geometry from its own OSM tags: the `width` tag (metres) if present and parseable, else `lanes` × 3.5 m, else the `line_width` fallback (if given), else unbuffered.
+
+Polygons and points are never buffered.
+
 ### Output modes
 
 **Multi-band** (default): one `uint8` band per feature, values 0 (absent) or 1 (present).
@@ -75,7 +90,7 @@ osm-rasterizer \
     --feature 'forest:{"landuse": "forest", "natural": "wood"}' \
     --feature 'wetland:{"natural": "wetland"}' \
     --feature 'infrastructure:{"building": true, "landuse": ["industrial", "commercial", "retail", "residential", "construction", "railway"]}' \
-    --feature 'road:{"highway": ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "service", "track", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"]}' \
+    --feature 'road:{"tags": {"highway": ["motorway", "trunk", "primary", "secondary", "tertiary", "unclassified", "residential", "service", "track", "motorway_link", "trunk_link", "primary_link", "secondary_link", "tertiary_link"]}, "line_width": 8, "width_from_tags": true}' \
     --feature 'water:{"natural": "water", "waterway": ["river", "canal", "stream", "drain", "ditch"]}' \
     --output cambridge_landcover.tif \
     --resolution 10 \
@@ -84,7 +99,7 @@ osm-rasterizer \
     --fill-nodata-distance 50
 ```
 
-This produces a 10 m resolution single-layer categorical raster with 8 land cover classes, with small gaps filled by propagating the nearest label up to 50 pixels away.
+This produces a 10 m resolution single-layer categorical raster with 8 land cover classes, with small gaps filled by propagating the nearest label up to 50 pixels away. Roads are burned at their real-world width where OSM `width`/`lanes` tags exist, falling back to 8 m otherwise.
 
 ## Example: Historical data
 
@@ -130,6 +145,8 @@ result = rasterize(
         ("building", {"building": True}),
         ("water", {"natural": "water"}),
         ("park", {"leisure": "park"}),
+        # linestrings: burn roads at their OSM-tagged width, else 8 m wide
+        ("road", {"highway": True}, {"line_width": 8.0, "width_from_tags": True}),
     ],
     resolution=10.0,
     single_layer=True,
@@ -140,7 +157,7 @@ result = rasterize(
 # result.array      — numpy array, shape (1, H, W) in single-layer mode
 # result.crs        — rasterio CRS
 # result.transform  — affine transform
-# result.categories — ["building", "water", "park"]
+# result.categories — ["building", "water", "park", "road"]
 
 # Write directly to a file:
 rasterize(
@@ -171,7 +188,7 @@ rasterize(
 
 1. **Fetch** — Features are downloaded via the Overpass API (using [osmnx](https://osmnx.readthedocs.io/)) from OpenStreetMap or OpenHistoricalMap and clipped to the exact bounding box. An optional `date` parameter queries the historical state of the map (OSM: Overpass `[date:]` attic query; OHM: filtering by `start_date`/`end_date` tags).
 2. **Project** — The bbox and geometries are reprojected to the best-fit UTM CRS (or a user-specified CRS).
-3. **Rasterize** — Each feature class is burned into a `uint8` grid using [rasterio](https://rasterio.readthedocs.io/).
+3. **Rasterize** — Each feature class is burned into a `uint8` grid using [rasterio](https://rasterio.readthedocs.io/). Linestrings are optionally buffered to a real-world width (from the `line_width` option or the features' own `width`/`lanes` tags) before burning; otherwise they render one pixel wide.
 4. **Merge / fill** — Bands are optionally merged into a single categorical layer, and empty pixels optionally filled using a Euclidean distance transform (scipy).
 5. **Write** — Output is a cloud-optimised, LZW-compressed, tiled GeoTIFF.
 

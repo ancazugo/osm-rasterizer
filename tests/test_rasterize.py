@@ -9,13 +9,15 @@ import geopandas as gpd
 import numpy as np
 import pytest
 import rasterio
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 
 from osm_rasterizer.rasterize import (
+    LANE_WIDTH_M,
     RasterizeResult,
     _auto_name,
     _fill_nodata_consensus,
     _normalize_features,
+    _parse_width_tag,
     rasterize,
 )
 
@@ -31,6 +33,13 @@ def _make_gdf(geoms=None) -> gpd.GeoDataFrame:
 
 def _empty_gdf() -> gpd.GeoDataFrame:
     return gpd.GeoDataFrame(geometry=[], crs="EPSG:4326")
+
+
+def _line_gdf(**columns) -> gpd.GeoDataFrame:
+    """A single-line GeoDataFrame with optional tag columns (e.g. width='12')."""
+    line = LineString([(-0.125, 51.495), (-0.115, 51.505)])
+    data = {k: [v] for k, v in columns.items()}
+    return gpd.GeoDataFrame(data, geometry=[line], crs="EPSG:4326")
 
 
 # ── _auto_name ──────────────────────────────────────────────────────────────
@@ -51,11 +60,14 @@ class TestAutoName:
 class TestNormalizeFeatures:
     def test_bare_dicts(self):
         result = _normalize_features([{"building": True}, {"highway": "residential"}])
-        assert result == [("building", {"building": True}), ("highway_residential", {"highway": "residential"})]
+        assert result == [
+            ("building", {"building": True}, {}),
+            ("highway_residential", {"highway": "residential"}, {}),
+        ]
 
     def test_named_tuples(self):
         result = _normalize_features([("bldgs", {"building": True})])
-        assert result == [("bldgs", {"building": True})]
+        assert result == [("bldgs", {"building": True}, {})]
 
     def test_empty_raises(self):
         with pytest.raises(ValueError, match="empty"):
@@ -64,6 +76,54 @@ class TestNormalizeFeatures:
     def test_mixed_raises(self):
         with pytest.raises(TypeError, match="mix"):
             _normalize_features([{"building": True}, ("roads", {"highway": True})])
+
+    def test_options_tuple(self):
+        result = _normalize_features([("roads", {"highway": True}, {"line_width": 8.0})])
+        assert result == [("roads", {"highway": True}, {"line_width": 8.0})]
+
+    def test_unknown_option_raises(self):
+        with pytest.raises(ValueError, match="unknown feature option"):
+            _normalize_features([("roads", {"highway": True}, {"buffer": 8.0})])
+
+    def test_non_dict_options_raises(self):
+        with pytest.raises(TypeError, match="must be a dict"):
+            _normalize_features([("roads", {"highway": True}, 8.0)])
+
+    def test_bad_tuple_length_raises(self):
+        with pytest.raises(TypeError, match="tuple of length"):
+            _normalize_features([("roads", {"highway": True}, {}, "extra")])
+
+
+# ── _parse_width_tag ────────────────────────────────────────────────────────
+
+class TestParseWidthTag:
+    def test_integer_string(self):
+        assert _parse_width_tag("12") == 12.0
+
+    def test_float_string(self):
+        assert _parse_width_tag("12.5") == 12.5
+
+    def test_metre_suffix(self):
+        assert _parse_width_tag("12 m") == 12.0
+        assert _parse_width_tag("12m") == 12.0
+
+    def test_numeric_value(self):
+        assert _parse_width_tag(7) == 7.0
+        assert _parse_width_tag(7.5) == 7.5
+
+    def test_unparseable_returns_none(self):
+        assert _parse_width_tag("narrow") is None
+        assert _parse_width_tag("3'6\"") is None
+
+    def test_none_returns_none(self):
+        assert _parse_width_tag(None) is None
+
+    def test_nan_returns_none(self):
+        assert _parse_width_tag(float("nan")) is None
+
+    def test_non_positive_returns_none(self):
+        assert _parse_width_tag("0") is None
+        assert _parse_width_tag("-3") is None
 
 
 # ── rasterize() ─────────────────────────────────────────────────────────────
@@ -314,6 +374,63 @@ class TestRasterizeFillNodata:
             )
         assert isinstance(result, RasterizeResult)
         assert result.array.shape[0] == 1
+
+
+# ── rasterize() line widths ──────────────────────────────────────────────────
+
+class TestLineWidths:
+    def _burned(self, gdf, options=None) -> int:
+        """Rasterize one feature over the London bbox and return the burned pixel count."""
+        spec = ("road", {"highway": True}) if options is None else ("road", {"highway": True}, options)
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=gdf):
+            result = rasterize(bbox=LONDON_BBOX, features=[spec], resolution=10.0)
+        return int((result.array > 0).sum())
+
+    def test_unbuffered_line_is_thin(self):
+        # Without options a line burns as a ~1-pixel-wide trace
+        count = self._burned(_line_gdf())
+        assert 0 < count < 500
+
+    def test_line_width_widens_line(self):
+        thin = self._burned(_line_gdf())
+        wide = self._burned(_line_gdf(), {"line_width": 50.0})
+        # 50 m width at 10 m resolution ≈ 5 pixels wide
+        assert wide > 3 * thin
+
+    def test_wider_burns_more(self):
+        w20 = self._burned(_line_gdf(), {"line_width": 20.0})
+        w100 = self._burned(_line_gdf(), {"line_width": 100.0})
+        assert w100 > w20
+
+    def test_width_tag_used(self):
+        from_tag = self._burned(_line_gdf(width="30"), {"width_from_tags": True})
+        fixed = self._burned(_line_gdf(), {"line_width": 30.0})
+        assert from_tag == fixed
+
+    def test_width_tag_beats_line_width(self):
+        from_tag = self._burned(_line_gdf(width="100"), {"width_from_tags": True, "line_width": 20.0})
+        fixed = self._burned(_line_gdf(), {"line_width": 100.0})
+        assert from_tag == fixed
+
+    def test_lanes_fallback(self):
+        from_lanes = self._burned(_line_gdf(lanes="4"), {"width_from_tags": True})
+        fixed = self._burned(_line_gdf(), {"line_width": 4 * LANE_WIDTH_M})
+        assert from_lanes == fixed
+
+    def test_unparseable_tags_fall_back_to_line_width(self):
+        junk = self._burned(_line_gdf(width="narrow", lanes="many"), {"width_from_tags": True, "line_width": 50.0})
+        fixed = self._burned(_line_gdf(), {"line_width": 50.0})
+        assert junk == fixed
+
+    def test_no_resolvable_width_stays_thin(self):
+        thin = self._burned(_line_gdf())
+        tags_only = self._burned(_line_gdf(), {"width_from_tags": True})
+        assert tags_only == thin
+
+    def test_polygons_not_buffered(self):
+        plain = self._burned(_make_gdf())
+        with_width = self._burned(_make_gdf(), {"line_width": 100.0})
+        assert with_width == plain
 
 
 @pytest.mark.integration

@@ -264,19 +264,23 @@ wheels = [
 
 [[package]]
 name = "osm-rasterizer"
-version = "0.1.0"
+version = "0.1.1"
 source = { editable = "." }
 dependencies = [
     { name = "geopandas" },
     { name = "numpy" },
     { name = "osmnx" },
     { name = "pyproj" },
-    { name = "pytest" },
     { name = "rasterio" },
     { name = "rich" },
     { name = "scipy" },
     { name = "shapely" },
     { name = "typer" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
 ]
 
 [package.metadata]
@@ -285,13 +289,15 @@ requires-dist = [
     { name = "numpy", specifier = ">=2.0" },
     { name = "osmnx", specifier = ">=2.0" },
     { name = "pyproj", specifier = ">=3.4" },
-    { name = "pytest", specifier = ">=9.0.2" },
     { name = "rasterio", specifier = ">=1.4" },
     { name = "rich", specifier = ">=13.0" },
     { name = "scipy", specifier = ">=1.17.0" },
     { name = "shapely", specifier = ">=2.0" },
     { name = "typer", specifier = ">=0.15" },
 ]
+
+[package.metadata.requires-dev]
+dev = [{ name = "pytest", specifier = ">=9.0.2" }]
 
 [[package]]
 name = "osmnx"
