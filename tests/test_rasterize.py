@@ -86,6 +86,21 @@ class TestRasterize:
             result = rasterize(bbox=LONDON_BBOX, features=[{"building": True}], resolution=50.0)
         assert isinstance(result, RasterizeResult)
 
+    def test_provider_passed_to_fetch(self):
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=_make_gdf()) as mock_fetch:
+            rasterize(
+                bbox=LONDON_BBOX,
+                features=[{"building": True}],
+                resolution=50.0,
+                provider="ohm",
+            )
+        assert mock_fetch.call_args.kwargs["provider"] == "ohm"
+
+    def test_provider_defaults_to_osm(self):
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=_make_gdf()) as mock_fetch:
+            rasterize(bbox=LONDON_BBOX, features=[{"building": True}], resolution=50.0)
+        assert mock_fetch.call_args.kwargs["provider"] == "osm"
+
     def test_array_shape_single_feature(self):
         with patch("osm_rasterizer.rasterize.fetch_features", return_value=_make_gdf()):
             result = rasterize(bbox=LONDON_BBOX, features=[{"building": True}], resolution=50.0)

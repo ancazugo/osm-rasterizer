@@ -126,6 +126,7 @@ def rasterize(
     transform: Union[Affine, None] = None,
     crs: Union[rasterio.CRS, str, None] = None,
     date: Union[str, None] = None,
+    provider: str = "osm",
 ) -> Union[RasterizeResult, None]:
     """Rasterize OSM features into a GeoTIFF or return a RasterizeResult.
 
@@ -159,8 +160,15 @@ def rasterize(
     crs:
         Output CRS; auto-detected from *bbox* if None.
     date:
-        Optional ISO 8601 date string (e.g. ``"2020-01-01"``) to query OSM
-        data as it existed at that point in time.
+        Optional ISO 8601 date string (e.g. ``"2020-01-01"``).  With
+        ``provider="osm"`` this queries OSM data as it existed at that point
+        in time; with ``provider="ohm"`` it selects features that existed in
+        the real world at that date via their ``start_date``/``end_date``
+        tags (partial dates like ``"1900"`` and BCE years like ``"-0500"``
+        are supported).
+    provider:
+        Data provider: ``"osm"`` (OpenStreetMap, default) or ``"ohm"``
+        (OpenHistoricalMap, CC0-licensed historical data).
 
     Returns
     -------
@@ -216,7 +224,7 @@ def rasterize(
     band_names: list[str] = []
 
     for name, tags in named_features:
-        gdf = fetch_features(bbox, tags, date=date)
+        gdf = fetch_features(bbox, tags, date=date, provider=provider)
 
         if gdf.empty:
             warnings.warn(

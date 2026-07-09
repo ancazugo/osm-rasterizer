@@ -132,3 +132,47 @@ class TestCli:
         assert result.exit_code == 0, result.output
         call_kwargs = mock_rast.call_args[1]
         assert call_kwargs["crs"] == "EPSG:32630"
+
+    def test_provider_passed_through(self, tmp_path):
+        out = str(tmp_path / "out.tif")
+        with self._patch_rasterize() as mock_rast:
+            result = runner.invoke(
+                app,
+                [
+                    "--bbox", "-0.13,51.49,-0.11,51.51",
+                    "--feature", '{"building": true}',
+                    "--output", out,
+                    "--provider", "ohm",
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        call_kwargs = mock_rast.call_args[1]
+        assert call_kwargs["provider"] == "ohm"
+
+    def test_provider_defaults_to_osm(self, tmp_path):
+        out = str(tmp_path / "out.tif")
+        with self._patch_rasterize() as mock_rast:
+            result = runner.invoke(
+                app,
+                [
+                    "--bbox", "-0.13,51.49,-0.11,51.51",
+                    "--feature", '{"building": true}',
+                    "--output", out,
+                ],
+            )
+        assert result.exit_code == 0, result.output
+        call_kwargs = mock_rast.call_args[1]
+        assert call_kwargs["provider"] == "osm"
+
+    def test_bad_provider_exits_nonzero(self, tmp_path):
+        out = str(tmp_path / "out.tif")
+        result = runner.invoke(
+            app,
+            [
+                "--bbox", "-0.13,51.49,-0.11,51.51",
+                "--feature", '{"building": true}',
+                "--output", out,
+                "--provider", "wikimapia",
+            ],
+        )
+        assert result.exit_code != 0

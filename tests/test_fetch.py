@@ -154,6 +154,120 @@ def test_date_settings_restored_on_error():
     assert ox.settings.overpass_settings == original
 
 
+def test_ohm_sets_overpass_url():
+    """provider='ohm' points osmnx at the OHM Overpass endpoint during the call."""
+    from osm_rasterizer.ohm import OHM_OVERPASS_URL
+
+    captured = {}
+
+    def _capture_url(*args, **kwargs):
+        captured["url"] = ox.settings.overpass_url
+        return _make_gdf()
+
+    import osmnx as ox
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=_capture_url):
+        fetch_features(LONDON_BBOX, {"building": True}, provider="ohm")
+
+    assert captured["url"] == OHM_OVERPASS_URL
+
+
+def test_ohm_url_restored_after_call():
+    """overpass_url is restored to its original value after an OHM fetch."""
+    import osmnx as ox
+
+    original = ox.settings.overpass_url
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", return_value=_make_gdf()):
+        fetch_features(LONDON_BBOX, {"building": True}, provider="ohm")
+
+    assert ox.settings.overpass_url == original
+
+
+def test_ohm_url_restored_on_error():
+    """overpass_url is restored even if osmnx raises an exception."""
+    import osmnx as ox
+
+    original = ox.settings.overpass_url
+    try:
+        from osmnx._errors import InsufficientResponseError
+    except ImportError:
+        from osmnx.errors import InsufficientResponseError
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=InsufficientResponseError()):
+        fetch_features(LONDON_BBOX, {"building": True}, provider="ohm")
+
+    assert ox.settings.overpass_url == original
+
+
+def test_ohm_date_does_not_set_date_filter():
+    """With OHM, the date must not be injected as an Overpass [date:] setting."""
+    captured = {}
+
+    def _capture_settings(*args, **kwargs):
+        captured["settings"] = ox.settings.overpass_settings
+        return _make_gdf()
+
+    import osmnx as ox
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=_capture_settings):
+        fetch_features(LONDON_BBOX, {"building": True}, date="1900-01-01", provider="ohm")
+
+    assert "[date:" not in captured["settings"]
+
+
+def test_ohm_date_post_filters():
+    """With OHM, the date filters features by start_date/end_date tags."""
+    poly = Polygon([(-0.125, 51.495), (-0.115, 51.495), (-0.115, 51.505), (-0.125, 51.505)])
+    gdf = gpd.GeoDataFrame(
+        {"start_date": ["1850", "1950"], "end_date": ["1950", None]},
+        geometry=[poly, poly],
+        crs="EPSG:4326",
+    )
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", return_value=gdf):
+        result = fetch_features(LONDON_BBOX, {"building": True}, date="1900-01-01", provider="ohm")
+
+    assert len(result) == 1
+    assert result.iloc[0]["start_date"] == "1850"
+
+
+def test_ohm_date_all_filtered_returns_empty():
+    """An OHM fetch where no feature matches the date returns an empty GeoDataFrame."""
+    poly = Polygon([(-0.125, 51.495), (-0.115, 51.495), (-0.115, 51.505), (-0.125, 51.505)])
+    gdf = gpd.GeoDataFrame(
+        {"start_date": ["1950"]}, geometry=[poly], crs="EPSG:4326"
+    )
+
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", return_value=gdf):
+        result = fetch_features(LONDON_BBOX, {"building": True}, date="1900-01-01", provider="ohm")
+
+    assert result.empty
+
+
+def test_osm_provider_unchanged():
+    """provider='osm' keeps the default endpoint and still injects [date:]."""
+    captured = {}
+
+    def _capture(*args, **kwargs):
+        captured["url"] = ox.settings.overpass_url
+        captured["settings"] = ox.settings.overpass_settings
+        return _make_gdf()
+
+    import osmnx as ox
+
+    original_url = ox.settings.overpass_url
+    with patch("osm_rasterizer.fetch.ox.features_from_bbox", side_effect=_capture):
+        fetch_features(LONDON_BBOX, {"building": True}, date="2020-01-01", provider="osm")
+
+    assert captured["url"] == original_url
+    assert '[date:"2020-01-01T00:00:00Z"]' in captured["settings"]
+
+
+def test_invalid_provider_raises():
+    with pytest.raises(ValueError, match="provider"):
+        fetch_features(LONDON_BBOX, {"building": True}, provider="foo")
+
+
 @pytest.mark.integration
 def test_integration_buildings():
     """Integration: fetch real buildings from Overpass for a small bbox."""
@@ -161,3 +275,11 @@ def test_integration_buildings():
     result = fetch_features(bbox, {"building": True})
     assert isinstance(result, gpd.GeoDataFrame)
     assert not result.empty, "Expected buildings in central London"
+
+
+@pytest.mark.integration
+def test_integration_ohm_buildings():
+    """Integration: fetch real features from the OHM Overpass instance."""
+    bbox = (-0.13, 51.49, -0.11, 51.51)
+    result = fetch_features(bbox, {"building": True}, provider="ohm")
+    assert isinstance(result, gpd.GeoDataFrame)

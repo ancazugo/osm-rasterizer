@@ -4,7 +4,7 @@
 [![Python 3.12+](https://img.shields.io/pypi/pyversions/osm-rasterizer.svg)](https://pypi.org/project/osm-rasterizer/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Convert OpenStreetMap vector features into GeoTIFF rasters. Define feature classes using OSM tags, specify a bounding box and resolution, and get a multi-band or single-layer categorical raster as output.
+Convert OpenStreetMap vector features into GeoTIFF rasters. Define feature classes using OSM tags, specify a bounding box and resolution, and get a multi-band or single-layer categorical raster as output. Also supports [OpenHistoricalMap](https://www.openhistoricalmap.org/) for rasterizing places as they existed at any point in history.
 
 ## Installation
 
@@ -36,7 +36,8 @@ osm-rasterizer \
 | `--fill-nodata` | | `False` | Fill empty pixels from nearest labelled neighbour |
 | `--fill-nodata-distance` | | unlimited | Max fill distance in pixels (prevents border flooding) |
 | `--crs` | | auto | Output CRS, e.g. `EPSG:32630`. Auto-detected as best-fit UTM if omitted |
-| `--date` | | current | Point-in-time date in ISO 8601 format (e.g. `2020-01-01`). Queries OSM as it existed at that date |
+| `--date` | | current | Point-in-time date in ISO 8601 format (e.g. `2020-01-01`). With `osm`, queries the OSM database as it existed at that date; with `ohm`, selects features that existed in the real world at that date |
+| `--provider` | `-p` | `osm` | Data provider: `osm` (OpenStreetMap) or `ohm` (OpenHistoricalMap) |
 
 ### Feature spec format
 
@@ -97,6 +98,27 @@ osm-rasterizer \
     --date "2015-01-01"
 ```
 
+## Example: OpenHistoricalMap
+
+The `--date` option on the default `osm` provider is limited to the history of the OSM *database* (2004 onwards). To rasterize old places — cities as they were in 1900, ancient road networks, vanished buildings — use the `ohm` provider, which fetches from [OpenHistoricalMap](https://www.openhistoricalmap.org/)'s Overpass API:
+
+```bash
+osm-rasterizer \
+    --bbox "-0.13,51.49,-0.11,51.51" \
+    --feature 'building:{"building": true}' \
+    --output london_buildings_1900.tif \
+    --provider ohm \
+    --date "1900-01-01"
+```
+
+Notes:
+
+- OHM uses the same tag vocabulary as OSM, so feature specs work unchanged. Data coverage depends on what has been mapped in OHM for your area.
+- OHM features carry `start_date`/`end_date` tags describing when they existed in the real world; `--date` keeps a feature when `start_date <= date <= end_date`. Features missing a `start_date` (or `end_date`) are treated as always existing (or still existing), and unparseable dates never exclude a feature.
+- Dates may be partial (`1900`, `1900-06`) or BCE (`-0500` for 500 BCE).
+- Without `--date`, all OHM features of all eras are rasterized together.
+- OHM data is CC0-licensed.
+
 ## Python API
 
 ```python
@@ -134,11 +156,20 @@ rasterize(
     output_path="buildings_2018.tif",
     date="2018-06-01",
 )
+
+# OpenHistoricalMap query:
+rasterize(
+    bbox=(-0.15, 51.48, -0.08, 51.52),
+    features=[("building", {"building": True})],
+    output_path="buildings_1900.tif",
+    provider="ohm",
+    date="1900-01-01",
+)
 ```
 
 ## How it works
 
-1. **Fetch** — OSM features are downloaded via the Overpass API (using [osmnx](https://osmnx.readthedocs.io/)) and clipped to the exact bounding box. An optional `date` parameter queries the historical state of the map.
+1. **Fetch** — Features are downloaded via the Overpass API (using [osmnx](https://osmnx.readthedocs.io/)) from OpenStreetMap or OpenHistoricalMap and clipped to the exact bounding box. An optional `date` parameter queries the historical state of the map (OSM: Overpass `[date:]` attic query; OHM: filtering by `start_date`/`end_date` tags).
 2. **Project** — The bbox and geometries are reprojected to the best-fit UTM CRS (or a user-specified CRS).
 3. **Rasterize** — Each feature class is burned into a `uint8` grid using [rasterio](https://rasterio.readthedocs.io/).
 4. **Merge / fill** — Bands are optionally merged into a single categorical layer, and empty pixels optionally filled using a Euclidean distance transform (scipy).
