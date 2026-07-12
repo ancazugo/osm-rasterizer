@@ -45,10 +45,17 @@ plugins:
             docstring_style: numpy
             filters: ["!^_"]
             show_source: true
+  # Renders committed .ipynb outputs; execute: false keeps the docs build
+  # network-free (the notebooks are pre-executed against live OSM and committed).
+  - mkdocs-jupyter:
+      execute: false
+      include_source: true
 
 nav:
   - Home: index.md
   - Installation: installation.md
   - CLI Usage: cli.md
   - Examples: examples.md
+  - Notebooks:
+      - Filtering by attribute: notebooks/filtering-by-attribute.ipynb
   - Python API: api.md

@@ -14,6 +14,7 @@ from shapely.geometry import LineString, Polygon
 from osm_rasterizer.rasterize import (
     LANE_WIDTH_M,
     RasterizeResult,
+    _apply_filter,
     _auto_name,
     _fill_nodata_consensus,
     _normalize_features,
@@ -40,6 +41,21 @@ def _line_gdf(**columns) -> gpd.GeoDataFrame:
     line = LineString([(-0.125, 51.495), (-0.115, 51.505)])
     data = {k: [v] for k, v in columns.items()}
     return gpd.GeoDataFrame(data, geometry=[line], crs="EPSG:4326")
+
+
+def _attr_gdf(rows: list[dict]) -> gpd.GeoDataFrame:
+    """Build a GeoDataFrame of small polygons, one per attribute-dict row.
+
+    Each row supplies attribute columns (``surface``, ``sport``, …); geometries
+    are small non-overlapping squares inside ``LONDON_BBOX``.
+    """
+    geoms = []
+    for i in range(len(rows)):
+        x = -0.128 + 0.004 * i
+        geoms.append(Polygon([(x, 51.495), (x + 0.003, 51.495), (x + 0.003, 51.505), (x, 51.505)]))
+    keys = {k for r in rows for k in r}
+    data = {k: [r.get(k) for r in rows] for k in keys}
+    return gpd.GeoDataFrame(data, geometry=geoms, crs="EPSG:4326")
 
 
 # ── _auto_name ──────────────────────────────────────────────────────────────
@@ -431,6 +447,149 @@ class TestLineWidths:
         plain = self._burned(_make_gdf())
         with_width = self._burned(_make_gdf(), {"line_width": 100.0})
         assert with_width == plain
+
+
+# ── _apply_filter ────────────────────────────────────────────────────────────
+
+class TestApplyFilter:
+    def test_dict_membership(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}, {"surface": "grass"}])
+        result = _apply_filter(gdf, {"surface": ["grass"]})
+        assert list(result["surface"]) == ["grass", "grass"]
+
+    def test_dict_string_value(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        result = _apply_filter(gdf, {"surface": "grass"})
+        assert list(result["surface"]) == ["grass"]
+
+    def test_dict_multi_value_split_on_semicolon(self):
+        gdf = _attr_gdf([{"sport": "soccer;basketball"}, {"sport": "tennis"}])
+        result = _apply_filter(gdf, {"sport": ["soccer"]})
+        assert list(result["sport"]) == ["soccer;basketball"]
+
+    def test_dict_and_across_columns(self):
+        gdf = _attr_gdf([
+            {"surface": "grass", "sport": "soccer"},
+            {"surface": "grass", "sport": "tennis"},
+            {"surface": "asphalt", "sport": "soccer"},
+        ])
+        result = _apply_filter(gdf, {"surface": ["grass"], "sport": ["soccer"]})
+        assert len(result) == 1
+        assert result.iloc[0]["sport"] == "soccer"
+
+    def test_dict_missing_column_drops_all(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        result = _apply_filter(gdf, {"sport": ["soccer"]})
+        assert len(result) == 0
+
+    def test_dict_nan_is_non_match(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": None}])
+        result = _apply_filter(gdf, {"surface": ["grass"]})
+        assert len(result) == 1
+
+    def test_callable_returns_geodataframe(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        result = _apply_filter(gdf, lambda g: g[g["surface"] == "grass"])
+        assert list(result["surface"]) == ["grass"]
+
+    def test_callable_returns_boolean_mask(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        result = _apply_filter(gdf, lambda g: (g["surface"] == "grass").to_numpy())
+        assert list(result["surface"]) == ["grass"]
+
+    def test_callable_bad_return_raises(self):
+        gdf = _attr_gdf([{"surface": "grass"}])
+        with pytest.raises(TypeError, match="GeoDataFrame or a boolean row mask"):
+            _apply_filter(gdf, lambda g: "nonsense")
+
+
+# ── _normalize_features / _validate_options: filter & GeoDataFrame ───────────
+
+class TestFilterAndGeoDataFrameNormalization:
+    def test_filter_dict_option_accepted(self):
+        result = _normalize_features([("p", {"leisure": "pitch"}, {"filter": {"surface": ["grass"]}})])
+        assert result == [("p", {"leisure": "pitch"}, {"filter": {"surface": ["grass"]}})]
+
+    def test_filter_callable_option_accepted(self):
+        fn = lambda g: g
+        result = _normalize_features([("p", {"leisure": "pitch"}, {"filter": fn})])
+        assert result[0][2]["filter"] is fn
+
+    def test_filter_bad_type_raises(self):
+        with pytest.raises(TypeError, match="filter for .* must be a dict or a callable"):
+            _normalize_features([("p", {"leisure": "pitch"}, {"filter": 42})])
+
+    def test_filter_bad_value_type_raises(self):
+        with pytest.raises(TypeError, match="must be a string or list of strings"):
+            _normalize_features([("p", {"leisure": "pitch"}, {"filter": {"surface": [1, 2]}})])
+
+    def test_geodataframe_feature_passes_through(self):
+        gdf = _attr_gdf([{"surface": "grass"}])
+        result = _normalize_features([("pitches", gdf)])
+        assert result[0][0] == "pitches"
+        assert result[0][1] is gdf
+        assert result[0][2] == {}
+
+    def test_bare_geodataframe_raises(self):
+        gdf = _attr_gdf([{"surface": "grass"}])
+        with pytest.raises(TypeError, match="must be named"):
+            _normalize_features([gdf])
+
+
+# ── rasterize() with filter and GeoDataFrame features ────────────────────────
+
+class TestRasterizeFilterAndGeoDataFrame:
+    def test_filter_narrows_fetched_rows(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=gdf):
+            filtered = rasterize(
+                bbox=LONDON_BBOX,
+                features=[("grass", {"leisure": "pitch"}, {"filter": {"surface": ["grass"]}})],
+                resolution=50.0,
+            )
+            unfiltered = rasterize(
+                bbox=LONDON_BBOX,
+                features=[("all", {"leisure": "pitch"})],
+                resolution=50.0,
+            )
+        assert int((filtered.array > 0).sum()) < int((unfiltered.array > 0).sum())
+        assert int((filtered.array > 0).sum()) > 0
+
+    def test_filter_matching_nothing_warns_zero_band(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        with patch("osm_rasterizer.rasterize.fetch_features", return_value=gdf):
+            with warnings.catch_warnings(record=True) as w:
+                warnings.simplefilter("always")
+                result = rasterize(
+                    bbox=LONDON_BBOX,
+                    features=[("clay", {"leisure": "pitch"}, {"filter": {"surface": ["clay"]}})],
+                    resolution=50.0,
+                )
+            assert len(w) == 1
+            assert "after filter" in str(w[0].message)
+        assert result.array.sum() == 0
+
+    def test_geodataframe_feature_skips_fetch(self):
+        gdf = _attr_gdf([{"surface": "grass"}])
+        with patch("osm_rasterizer.rasterize.fetch_features") as mock_fetch:
+            result = rasterize(
+                bbox=LONDON_BBOX,
+                features=[("pitches", gdf)],
+                resolution=50.0,
+            )
+        mock_fetch.assert_not_called()
+        assert result.array.max() == 1
+
+    def test_geodataframe_feature_respects_filter(self):
+        gdf = _attr_gdf([{"surface": "grass"}, {"surface": "asphalt"}])
+        with patch("osm_rasterizer.rasterize.fetch_features") as mock_fetch:
+            result = rasterize(
+                bbox=LONDON_BBOX,
+                features=[("grass", gdf, {"filter": {"surface": ["grass"]}})],
+                resolution=50.0,
+            )
+        mock_fetch.assert_not_called()
+        assert result.array.max() == 1
 
 
 @pytest.mark.integration

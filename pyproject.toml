@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ancazugo/osm-rasterizer"
+Homepage = "https://ancazugo.github.io/osm-rasterizer"
 Repository = "https://github.com/ancazugo/osm-rasterizer"
 
 [project.scripts]
@@ -42,6 +42,7 @@ docs = [
     "mkdocs>=1.6",
     "mkdocs-material>=9.5",
     "mkdocstrings[python]>=0.27",
+    "mkdocs-jupyter>=0.25",
 ]
 
 [build-system]

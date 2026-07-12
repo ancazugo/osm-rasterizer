@@ -4,7 +4,7 @@ import dataclasses
 import warnings
 from math import ceil
 from pathlib import Path
-from typing import Union
+from typing import Callable, Union
 
 import geopandas as gpd
 import numpy as np
@@ -17,14 +17,22 @@ from .crs import get_utm_crs
 from .fetch import fetch_features
 
 OsmTags = dict[str, Union[str, bool, list[str]]]
-FeatureOptions = dict[str, Union[float, bool]]
-FeatureSpec = Union[OsmTags, tuple[str, OsmTags], tuple[str, OsmTags, FeatureOptions]]
+FeatureFilter = Union[dict[str, Union[str, list[str]]], Callable[[gpd.GeoDataFrame], object]]
+FeatureOptions = dict[str, Union[float, bool, FeatureFilter]]
+# The tags slot may be an OSM tag dict (fetched from the provider) or a
+# pre-fetched GeoDataFrame (used directly, skipping the fetch).
+FeatureSource = Union[OsmTags, gpd.GeoDataFrame]
+FeatureSpec = Union[
+    OsmTags,
+    tuple[str, FeatureSource],
+    tuple[str, FeatureSource, FeatureOptions],
+]
 
 # Assumed width of a single traffic lane, used when deriving a line width
 # from a `lanes` tag.
 LANE_WIDTH_M = 3.5
 
-VALID_FEATURE_OPTIONS = ("line_width", "width_from_tags")
+VALID_FEATURE_OPTIONS = ("line_width", "width_from_tags", "filter")
 
 
 @dataclasses.dataclass
@@ -108,7 +116,29 @@ def _validate_options(options: dict, context: str) -> dict:
             f"unknown feature option(s) {sorted(unknown)} for {context}; "
             f"valid options are {list(VALID_FEATURE_OPTIONS)}"
         )
+    if "filter" in options:
+        _validate_filter(options["filter"], context)
     return options
+
+
+def _validate_filter(filter_spec, context: str) -> None:
+    """Validate a ``filter`` feature option (a dict or a callable)."""
+    if callable(filter_spec):
+        return
+    if not isinstance(filter_spec, dict):
+        raise TypeError(
+            f"filter for {context} must be a dict or a callable, "
+            f"got {type(filter_spec).__name__}"
+        )
+    for col, allowed in filter_spec.items():
+        if isinstance(allowed, str):
+            continue
+        if isinstance(allowed, (list, tuple)) and all(isinstance(v, str) for v in allowed):
+            continue
+        raise TypeError(
+            f"filter values for {context} must be a string or list of strings; "
+            f"column {col!r} got {allowed!r}"
+        )
 
 
 def _normalize_features(
@@ -140,6 +170,11 @@ def _normalize_features(
                     f"got tuple of length {len(f)}"
                 )
             normalized.append((str(name), tags, _validate_options(options, f"feature '{name}'")))
+        elif isinstance(f, gpd.GeoDataFrame):
+            raise TypeError(
+                "a GeoDataFrame feature must be named, e.g. ('pitches', gdf); "
+                "a bare GeoDataFrame has no name"
+            )
         else:
             normalized.append((_auto_name(f, i), f, {}))
     return normalized
@@ -213,6 +248,52 @@ def _apply_line_widths(gdf_utm, options: dict):
     return gpd.GeoSeries(buffered, crs=gdf_utm.crs)
 
 
+def _apply_filter(gdf: gpd.GeoDataFrame, filter_spec) -> gpd.GeoDataFrame:
+    """Post-fetch row filter, enabling AND-on-attribute splits of a tag class.
+
+    osmnx ORs tag keys, so a query cannot express "pitch AND surface=grass".
+    Instead the feature fetches the broad tag class and this narrows the
+    returned rows by their attribute columns.
+
+    ``filter_spec`` is one of:
+
+    - A **callable** ``gdf -> gdf``; it may return a filtered GeoDataFrame or a
+      boolean row mask (Series/array).
+    - A **dict** ``{column: value | [values]}``.  A row is kept when *every*
+      column matches (AND).  A cell matches when its value — split on ``;`` and
+      stripped, so OSM multi-values like ``"soccer;basketball"`` work —
+      intersects the allowed set.  A column absent from the GeoDataFrame or a
+      missing (NaN) cell matches nothing.
+    """
+    if callable(filter_spec):
+        result = filter_spec(gdf)
+        if isinstance(result, gpd.GeoDataFrame):
+            return result
+        try:
+            mask = np.asarray(result, dtype=bool)
+        except (TypeError, ValueError):
+            mask = None
+        if mask is None or mask.shape != (len(gdf),):
+            raise TypeError(
+                "filter callable must return a GeoDataFrame or a boolean row "
+                f"mask of length {len(gdf)}, got {type(result).__name__}"
+            )
+        return gdf[mask]
+
+    mask = np.ones(len(gdf), dtype=bool)
+    for col, allowed in filter_spec.items():
+        allowed_set = {allowed} if isinstance(allowed, str) else set(allowed)
+        if col not in gdf.columns:
+            return gdf.iloc[:0]
+        col_mask = gdf[col].map(
+            lambda v: bool(allowed_set & {p.strip() for p in str(v).split(";")})
+            if v is not None and v == v  # not None, not NaN
+            else False
+        )
+        mask &= col_mask.to_numpy(dtype=bool)
+    return gdf[mask]
+
+
 def rasterize(
     bbox: tuple[float, float, float, float],
     features: list,
@@ -233,10 +314,25 @@ def rasterize(
     bbox:
         ``(minx, miny, maxx, maxy)`` in WGS84 degrees.
     features:
-        List of OSM tag dicts, ``(name, tags)`` tuples, or
-        ``(name, tags, options)`` tuples.  The options dict controls how
-        linestring geometries (roads, waterways, …) are burned:
+        List of OSM tag dicts, ``(name, source)`` tuples, or
+        ``(name, source, options)`` tuples.  ``source`` is either an OSM tag
+        dict (fetched from the provider) or a **pre-fetched GeoDataFrame**
+        used directly — handy for fetching a tag class once and splitting it
+        into several bands, or for any filtering pandas can express.  A
+        GeoDataFrame source must be named (bare GeoDataFrames are rejected).
 
+        The options dict controls per-feature behaviour:
+
+        - ``filter`` (dict or callable): keep only some of the fetched rows,
+          enabling AND-on-attribute splits that a tag query cannot express
+          (osmnx ORs tag keys).  A dict ``{column: value | [values]}`` keeps a
+          row when *every* column matches (AND); a cell matches when its value,
+          split on ``;`` (so multi-values like ``"soccer;basketball"`` work),
+          intersects the allowed set — an absent column or missing cell matches
+          nothing.  A callable ``gdf -> gdf`` may instead return a filtered
+          GeoDataFrame or a boolean row mask.  Example: split ``leisure=pitch``
+          by surface with ``{"filter": {"surface": ["grass"], "sport":
+          ["soccer"]}}``.
         - ``line_width`` (float): real-world width in metres; lines are
           buffered by ``line_width / 2`` in the projected CRS before
           rasterization.
@@ -334,13 +430,21 @@ def rasterize(
     bands: list[np.ndarray] = []
     band_names: list[str] = []
 
-    for name, tags, options in named_features:
-        gdf = fetch_features(bbox, tags, date=date, provider=provider)
+    for name, source, options in named_features:
+        if isinstance(source, gpd.GeoDataFrame):
+            gdf = source
+        else:
+            gdf = fetch_features(bbox, source, date=date, provider=provider)
+
+        if "filter" in options and not gdf.empty:
+            gdf = _apply_filter(gdf, options["filter"])
 
         if gdf.empty:
+            spec_desc = "pre-fetched GeoDataFrame" if isinstance(source, gpd.GeoDataFrame) else repr(source)
+            filter_desc = " after filter" if "filter" in options else ""
             warnings.warn(
-                f"No features found for tag spec {tags!r} (band '{name}'); "
-                "writing zero band.",
+                f"No features found for feature spec {spec_desc}{filter_desc} "
+                f"(band '{name}'); writing zero band.",
                 stacklevel=2,
             )
             bands.append(np.zeros((height, width), dtype=np.uint8))

@@ -59,6 +59,16 @@ class TestParseFeature:
         result = _parse_feature('{"tags": "yes"}')
         assert result == {"tags": "yes"}
 
+    def test_envelope_with_filter(self):
+        result = _parse_feature(
+            'pitch_grass:{"tags": {"leisure": "pitch"}, "filter": {"surface": ["grass"], "sport": ["soccer"]}}'
+        )
+        assert result == (
+            "pitch_grass",
+            {"leisure": "pitch"},
+            {"filter": {"surface": ["grass"], "sport": ["soccer"]}},
+        )
+
 
 # ── CLI integration ──────────────────────────────────────────────────────────
 

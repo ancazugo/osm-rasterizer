@@ -22,6 +22,75 @@ osm-rasterizer \
 
 This produces a 10 m resolution single-layer categorical raster with 8 land cover classes, with small gaps filled by propagating the nearest label up to 50 pixels away. Roads are burned at their real-world width where OSM `width`/`lanes` tags exist, falling back to 8 m otherwise.
 
+## Splitting one tag class by attribute
+
+osmnx ORs tag keys, so `{"leisure": "pitch", "surface": "grass"}` means *pitch **or** anything
+grass-surfaced* — it cannot express "pitches whose surface is grass". Instead, fetch the broad tag
+class and narrow the returned rows with a per-feature `filter`. A `filter` dict keeps a row only when
+**every** column matches (AND); a cell matches when its value — split on `;`, so OSM multi-values like
+`sport="soccer;basketball"` work — is in the allowed list.
+
+```python
+from osm_rasterizer import rasterize
+
+# One categorical raster with football pitches split into three surface bands.
+result = rasterize(
+    bbox=(-0.15, 51.48, -0.08, 51.52),
+    features=[
+        ("pitch_hard",       {"leisure": "pitch"}, {"filter": {"sport": ["soccer"], "surface": ["asphalt", "concrete", "paving_stones"]}}),
+        ("pitch_artificial", {"leisure": "pitch"}, {"filter": {"sport": ["soccer"], "surface": ["artificial_turf", "artificial"]}}),
+        ("pitch_grass",      {"leisure": "pitch"}, {"filter": {"sport": ["soccer"], "surface": ["grass"]}}),
+    ],
+    resolution=10.0,
+    single_layer=True,  # later features win: grass beats artificial beats hard
+)
+# result.categories → ["pitch_hard", "pitch_artificial", "pitch_grass"]
+```
+
+To avoid re-fetching `leisure=pitch` once per band, fetch it once and pass **pre-fetched
+GeoDataFrames** as features (Python API only) — any pandas filtering works, including things a `filter`
+dict can't express:
+
+```python
+from osm_rasterizer import rasterize, fetch_features
+
+bbox = (-0.15, 51.48, -0.08, 51.52)
+pitches = fetch_features(bbox, {"leisure": "pitch"})
+soccer = pitches[pitches.get("sport", "").fillna("").str.contains("soccer")]
+
+def by_surface(values):
+    return soccer[soccer.get("surface").isin(values)]
+
+rasterize(
+    bbox,
+    features=[
+        ("pitch_hard",       by_surface(["asphalt", "concrete", "paving_stones"])),
+        ("pitch_artificial", by_surface(["artificial_turf", "artificial"])),
+        ("pitch_grass",      by_surface(["grass"])),
+    ],
+    resolution=10.0,
+    single_layer=True,
+    output_path="pitches_by_surface.tif",
+)
+```
+
+For a fully worked, map-and-plot walkthrough of the `filter` option on live OSM data — an **OR**
+example (restaurants by cuisine) and an **AND** example (footways by surface, then rasterized) — see the
+[Filtering by attribute](notebooks/filtering-by-attribute.ipynb) notebook.
+
+The same split from the CLI, using the `filter` dict in a feature envelope:
+
+```bash
+osm-rasterizer \
+    --bbox "-0.15,51.48,-0.08,51.52" \
+    --feature 'pitch_hard:{"tags": {"leisure": "pitch"}, "filter": {"sport": ["soccer"], "surface": ["asphalt", "concrete", "paving_stones"]}}' \
+    --feature 'pitch_artificial:{"tags": {"leisure": "pitch"}, "filter": {"sport": ["soccer"], "surface": ["artificial_turf", "artificial"]}}' \
+    --feature 'pitch_grass:{"tags": {"leisure": "pitch"}, "filter": {"sport": ["soccer"], "surface": ["grass"]}}' \
+    --output pitches_by_surface.tif \
+    --resolution 10 \
+    --single-layer
+```
+
 ## Historical data
 
 Use `--date` to extract OSM data as it existed at a specific point in time:

@@ -12,7 +12,7 @@ app = typer.Typer(help="Rasterize OpenStreetMap features into GeoTIFF rasters.")
 console = Console()
 
 
-_ENVELOPE_OPTION_KEYS = ("line_width", "width_from_tags")
+_ENVELOPE_OPTION_KEYS = ("line_width", "width_from_tags", "filter")
 
 
 def _parse_feature(s: str) -> tuple[str, dict, dict] | tuple[str, dict] | dict:
@@ -22,7 +22,12 @@ def _parse_feature(s: str) -> tuple[str, dict, dict] | tuple[str, dict] | dict:
     - ``'{"building": true}'``          → bare tags dict
     - ``'name:{"building": true}'``     → named tuple
     - ``'name:{"tags": {"highway": true}, "line_width": 8}'`` → envelope with
-      per-feature options (``line_width``, ``width_from_tags``)
+      per-feature options (``line_width``, ``width_from_tags``, ``filter``)
+
+    The ``filter`` option (a ``{"column": ["values"]}`` dict) keeps only rows
+    whose attribute columns match — e.g. splitting ``leisure=pitch`` by surface
+    with ``'grass:{"tags": {"leisure": "pitch"}, "filter": {"surface":
+    ["grass"]}}'``.
 
     A JSON object containing a ``"tags"`` key whose value is an object is
     treated as an envelope; anything else is a plain OSM tag dict.
@@ -67,7 +72,7 @@ def _parse_feature(s: str) -> tuple[str, dict, dict] | tuple[str, dict] | dict:
 @app.command()
 def main(
     bbox: Annotated[str, typer.Option("--bbox", "-b", help="Bounding box as 'minx,miny,maxx,maxy' in WGS84.")],
-    feature: Annotated[list[str], typer.Option("--feature", "-f", help="OSM feature spec. Format: '{\"key\": val}', 'name:{\"key\": val}', or envelope with line-width options: 'name:{\"tags\": {\"key\": val}, \"line_width\": 8, \"width_from_tags\": true}'. Repeatable.")],
+    feature: Annotated[list[str], typer.Option("--feature", "-f", help="OSM feature spec. Format: '{\"key\": val}', 'name:{\"key\": val}', or envelope with options: 'name:{\"tags\": {\"key\": val}, \"line_width\": 8, \"width_from_tags\": true, \"filter\": {\"surface\": [\"grass\"]}}'. The 'filter' dict keeps only rows whose columns match (AND) — e.g. split leisure=pitch by surface. Repeatable.")],
     output: Annotated[str, typer.Option("--output", "-o", help="Output GeoTIFF file path.")],
     resolution: Annotated[float, typer.Option("--resolution", "-r", help="Pixel resolution in metres.")] = 10.0,
     single_layer: Annotated[bool, typer.Option("--single-layer", help="Merge all features into a single band.")] = False,
